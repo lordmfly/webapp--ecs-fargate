@@ -1,0 +1,231 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+   VPCCIDR:
+     Description: this is first vpc
+     Type: String
+     Default: "10.0.0.0/24"
+   TgName:
+     Description: this is tg 
+     Type: String
+     Default: "demotg"
+   imageName:
+      Description: Image name
+      Type: String
+      Default: "public.ecr.aws/f7y3k7b7/webapp:latest"
+   Env:
+     Description: Env
+     Type: String
+     Default: "dev"
+   SUBCIDR:
+      Description: this is demo subnet1
+      Type: String
+      Default: "10.0.0.0/25"
+   containerName:
+      Description: Name of the Container
+      Type: String
+      Default: "webapp"
+   AVAILZONE:
+      Type: String
+      Default: "ap-south-1a"
+   serviceName:
+      Description: this is service name
+      Type: String
+      Default: "demo-service"
+   SUBCIDR2:
+      Description: this is demo subnet2
+      Type: String
+      Default: "10.0.0.128/25"
+   clusterName:
+      Description: Cluster name
+      Type: String
+      Default: "demo-cluster"
+   AVAILZONE2:
+      Type: String
+      Default: "ap-south-1b"
+   ALBname:
+     Type: String
+     Default: "demo-app"
+   
+Resources:
+   VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+       CidrBlock: !Ref VPCCIDR
+       EnableDnsSupport: True
+       Tags:
+         - Key: Name
+           Value: vpc
+   SUBNET1:
+     Type: AWS::EC2::Subnet
+     Properties:
+       CidrBlock: !Ref SUBCIDR
+       AvailabilityZone: !Ref AVAILZONE
+       VpcId: !Ref VPC
+       Tags:
+         - Key: Name
+           Value: subnet1
+   SUBNET2:
+     Type: AWS::EC2::Subnet
+     Properties:
+       CidrBlock: !Ref SUBCIDR2
+       AvailabilityZone: !Ref AVAILZONE2
+       VpcId: !Ref VPC
+       Tags:
+         - Key: Name
+           Value: subnet2
+   IGW:
+     Type: AWS::EC2::InternetGateway
+     Properties:
+       Tags:
+         - Key: Name
+           Value: igw
+   IgwAttach:
+     Type: AWS::EC2::VPCGatewayAttachment
+     Properties:
+        InternetGatewayId: !Ref IGW
+        VpcId: !Ref VPC
+   RouteTable:
+     Type: AWS::EC2::RouteTable
+     Properties:
+       VpcId: !Ref VPC
+       Tags:
+         - Key: Name
+           Value: rt
+   SubnetAsso:
+       Type: AWS::EC2::SubnetRouteTableAssociation
+       Properties: 
+          RouteTableId: !Ref RouteTable
+          SubnetId: !Ref SUBNET1
+   Subnet2Asso:
+       Type: AWS::EC2::SubnetRouteTableAssociation
+       Properties: 
+          RouteTableId: !Ref RouteTable
+          SubnetId: !Ref SUBNET2
+   IgwRoute:
+    Type: AWS::EC2::Route
+    Properties: 
+     RouteTableId: !Ref RouteTable
+     GatewayId: !Ref IGW
+     DestinationCidrBlock: "0.0.0.0/0"
+   Security:
+     Type: AWS::EC2::SecurityGroup
+     Properties:
+        VpcId: 
+           Ref: VPC
+        GroupName: "demoSG"
+        GroupDescription: "This is demo group"
+        SecurityGroupIngress:
+            - IpProtocol: tcp
+              FromPort: 80
+              ToPort: 80
+              CidrIp: 0.0.0.0/0
+            - IpProtocol: tcp
+              FromPort: 22
+              ToPort: 22
+              CidrIp: 0.0.0.0/0
+            - IpProtocol: tcp
+              FromPort: 443
+              ToPort: 443
+              CidrIp: 0.0.0.0/0
+   Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref clusterName
+   ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecs-cli-deploy
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+   TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: Fargate
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Ref ExecutionRole
+      ContainerDefinitions:
+        - Name: !Ref containerName
+          Image: !Ref imageName
+          PortMappings:
+            - ContainerPort: 80
+      RequiresCompatibilities:
+        - FARGATE
+        
+   Service:
+    DependsOn: 
+       - ALB
+       - TargetGroup
+       - HTTPListener
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref serviceName
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerPort: 80
+          ContainerName: !Ref containerName
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref SUBNET1
+            - !Ref SUBNET2
+          SecurityGroups:
+            - !Ref Security
+   ALB:
+     Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+     Properties:
+        Name: !Ref ALBname
+        Scheme: "internet-facing"
+        Type: "application"
+        Subnets: 
+          - !Ref SUBNET1
+          - !Ref SUBNET2
+        SecurityGroups: 
+          - !Ref Security
+          
+   HTTPListener:
+     DependsOn: 
+       - ALB
+       - TargetGroup
+     Type: AWS::ElasticLoadBalancingV2::Listener
+     Properties:
+       LoadBalancerArn: !Ref ALB
+       Port: 80
+       Protocol: HTTP
+       DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+   TargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+            HealthCheckIntervalSeconds: 120
+            HealthCheckPath: "/"
+            Port: 80
+            Protocol: "HTTP"
+            HealthCheckPort: "80"
+            HealthCheckProtocol: "HTTP"
+            HealthCheckTimeoutSeconds: 60
+            UnhealthyThresholdCount: 2
+            TargetType: "ip"
+            Matcher: 
+                HttpCode: "200"
+            HealthyThresholdCount: 5
+            VpcId: !Ref VPC
+            Name: !Ref TgName
+            HealthCheckEnabled: true

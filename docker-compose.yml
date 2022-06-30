@@ -1,0 +1,9 @@
+version: "3.6"
+services:
+      web_app:
+           build: .
+           image: webapp
+           container_name: webapp
+           ports:
+              - 8000:80
+
